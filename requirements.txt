@@ -19,3 +19,4 @@ peft==0.17.1
 cloudinary
 fastapi 
 uvicorn
+pyngrok

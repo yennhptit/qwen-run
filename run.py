@@ -16,8 +16,9 @@ import cloudinary
 import cloudinary.uploader
 from dotenv import load_dotenv
 import os
+import uvicorn
 
-# Load .env
+# ================== Load Cloudinary config ==================
 load_dotenv()
 CLOUD_NAME = os.getenv("CLOUD_NAME")
 API_KEY = os.getenv("API_KEY")
@@ -29,41 +30,60 @@ cloudinary.config(
     api_secret=API_SECRET,
 )
 
-# FastAPI setup
+# ================== FastAPI setup ==================
 app = FastAPI(title="Qwen Image Edit CPU Only")
 
 class ImageRequest(BaseModel):
     image_url: str
     prompt: str
 
-MAX_WORKERS = 2
+# ================== ThreadPool & task tracking ==================
+MAX_WORKERS = 1
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
-progress_dict: Dict[str, float] = {}
+
+# task_id -> {"progress": float, "image_url": Optional[str]}
+task_status: Dict[str, Dict] = {}
 
 # CPU device
 device = "cpu"
 
-# Model setup
+# ================== Model setup ==================
 model_id = "Qwen/Qwen-Image-Edit"
 torch_dtype = torch.bfloat16
 
-quantization_config = DiffusersBitsAndBytesConfig(
-    load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16,
+# Transformer quantization
+transformer_quant = DiffusersBitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.bfloat16,
     llm_int8_skip_modules=["transformer_blocks.0.img_mod"]
 )
 transformer = QwenImageTransformer2DModel.from_pretrained(
-    model_id, subfolder="transformer", quantization_config=quantization_config, torch_dtype=torch_dtype
+    model_id,
+    subfolder="transformer",
+    quantization_config=transformer_quant,
+    torch_dtype=torch_dtype
 ).to(device)
 
-quantization_config = TransformersBitsAndBytesConfig(
-    load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16
+# Text encoder quantization
+text_encoder_quant = TransformersBitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.bfloat16
 )
 text_encoder = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-    model_id, subfolder="text_encoder", quantization_config=quantization_config, torch_dtype=torch_dtype
+    model_id,
+    subfolder="text_encoder",
+    quantization_config=text_encoder_quant,
+    torch_dtype=torch_dtype
 ).to(device)
 
+# Pipeline
 pipe = QwenImageEditPipeline.from_pretrained(
-    model_id, transformer=transformer, text_encoder=text_encoder, torch_dtype=torch_dtype
+    model_id,
+    transformer=transformer,
+    text_encoder=text_encoder,
+    torch_dtype=torch_dtype
 )
 pipe.load_lora_weights(
     "flymy-ai/qwen-image-edit-inscene-lora",
@@ -71,14 +91,15 @@ pipe.load_lora_weights(
 )
 pipe.enable_model_cpu_offload()
 
-generator = torch.Generator(device=device).manual_seed(42)
+generator = torch.Generator(device="cuda").manual_seed(42)
 
+# ================== Image generation & upload ==================
 def generate_and_upload(task_id: str, image_url: str, prompt: str) -> str:
     try:
         def callback(step, timestep, latents):
             total_steps = 32
             percent = (step + 1) / total_steps * 100
-            progress_dict[task_id] = percent
+            task_status[task_id]["progress"] = percent
 
         image = load_image(image_url)
         edited_image = pipe(
@@ -96,26 +117,45 @@ def generate_and_upload(task_id: str, image_url: str, prompt: str) -> str:
 
         public_id = f"qwen_{uuid.uuid4().hex}"
         upload_result = cloudinary.uploader.upload(buf, public_id=public_id, resource_type="image")
-        progress_dict[task_id] = 100.0
+        
+        # Cập nhật progress và link ảnh
+        task_status[task_id]["progress"] = 100.0
+        task_status[task_id]["image_url"] = upload_result["secure_url"]
+
         return upload_result["secure_url"]
+
     except Exception as e:
-        progress_dict[task_id] = -1.0
+        task_status[task_id]["progress"] = -1.0
+        task_status[task_id]["image_url"] = None
         raise RuntimeError(f"Failed to generate/upload image: {e}")
 
+# ================== API endpoints ==================
 @app.post("/edit-image")
 async def edit_image(request: ImageRequest):
     task_id = str(uuid.uuid4())
-    progress_dict[task_id] = 0.0
+    task_status[task_id] = {"progress": 0.0, "image_url": None}
+
     future = executor.submit(generate_and_upload, task_id, request.image_url, request.prompt)
     try:
-        cloud_url = future.result()
+        cloud_url = future.result()  # blocking until done
         return {"task_id": task_id, "image_url": cloud_url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/progress/{task_id}")
 async def check_progress(task_id: str):
-    if task_id not in progress_dict:
+    if task_id not in task_status:
         return JSONResponse(status_code=404, content={"error": "task_id not found"})
-    percent = progress_dict[task_id]
-    return {"task_id": task_id, "progress": percent}
+    
+    status = task_status[task_id]
+    response = {"task_id": task_id, "progress": status["progress"]}
+    
+    # Nếu task hoàn tất, trả luôn link ảnh
+    if status["progress"] == 100.0 and status["image_url"]:
+        response["image_url"] = status["image_url"]
+    
+    return response
+
+# ================== Run server ==================
+if __name__ == "__main__":
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
