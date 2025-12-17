@@ -1,11 +1,14 @@
 import io
+import os
 import uuid
+from datetime import datetime
 import torch
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
+from urllib.parse import urlparse
 from transformers import BitsAndBytesConfig as TransformersBitsAndBytesConfig
 from transformers import Qwen2_5_VLForConditionalGeneration
 from diffusers import BitsAndBytesConfig as DiffusersBitsAndBytesConfig
@@ -15,7 +18,6 @@ from PIL import Image
 import cloudinary
 import cloudinary.uploader
 from dotenv import load_dotenv
-import os
 import uvicorn
 
 # ================== Load Cloudinary config ==================
@@ -38,11 +40,9 @@ class ImageRequest(BaseModel):
     prompt: str
 
 # ================== ThreadPool & task tracking ==================
-MAX_WORKERS = 1
+MAX_WORKERS = 2
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
-
-# task_id -> {"progress": float, "image_url": Optional[str]}
-task_status: Dict[str, Dict] = {}
+task_status: Dict[str, Dict] = {}  # task_id -> {"progress": float, "image_url": str}
 
 # CPU device
 device = "cpu"
@@ -91,7 +91,7 @@ pipe.load_lora_weights(
 )
 pipe.enable_model_cpu_offload()
 
-generator = torch.Generator(device="cuda").manual_seed(42)
+generator = torch.Generator(device=device).manual_seed(42)
 
 # ================== Image generation & upload ==================
 def generate_and_upload(task_id: str, image_url: str, prompt: str) -> str:
@@ -115,10 +115,18 @@ def generate_and_upload(task_id: str, image_url: str, prompt: str) -> str:
         edited_image.save(buf, format="PNG")
         buf.seek(0)
 
-        public_id = f"qwen_{uuid.uuid4().hex}"
+        # Lấy tên file gốc từ URL và thêm _edit + timestamp + random suffix
+        parsed_url = urlparse(image_url)
+        original_name = os.path.basename(parsed_url.path)
+        name_wo_ext = os.path.splitext(original_name)[0]
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        random_suffix = uuid.uuid4().hex[:6]
+        public_id = f"{name_wo_ext}_edit_{timestamp}_{random_suffix}"
+
+        # Upload lên Cloudinary
         upload_result = cloudinary.uploader.upload(buf, public_id=public_id, resource_type="image")
-        
-        # Cập nhật progress và link ảnh
+
+        # Cập nhật status
         task_status[task_id]["progress"] = 100.0
         task_status[task_id]["image_url"] = upload_result["secure_url"]
 
@@ -137,7 +145,7 @@ async def edit_image(request: ImageRequest):
 
     future = executor.submit(generate_and_upload, task_id, request.image_url, request.prompt)
     try:
-        cloud_url = future.result()  # blocking until done
+        cloud_url = future.result()
         return {"task_id": task_id, "image_url": cloud_url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -150,7 +158,6 @@ async def check_progress(task_id: str):
     status = task_status[task_id]
     response = {"task_id": task_id, "progress": status["progress"]}
     
-    # Nếu task hoàn tất, trả luôn link ảnh
     if status["progress"] == 100.0 and status["image_url"]:
         response["image_url"] = status["image_url"]
     
