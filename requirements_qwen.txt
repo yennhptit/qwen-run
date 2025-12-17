@@ -1,0 +1,21 @@
+# Transformers
+transformers==4.55.4
+
+# Diffusers từ GitHub
+git+https://github.com/huggingface/diffusers
+
+# PyTorch + CUDA 12.1
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+
+# Additional libraries
+bitsandbytes
+accelerate
+
+# PEFT backend
+peft==0.17.1
+
+cloudinary
+fastapi 
+uvicorn
