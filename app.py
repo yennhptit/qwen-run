@@ -30,6 +30,15 @@ cloudinary.config(
 
 # ================== FastAPI setup ==================
 app = FastAPI(title="Qwen Image Edit Fake CPU Only")
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Cho phép tất cả domain, test nhanh
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class ImageRequest(BaseModel):
     image_url: str
@@ -38,7 +47,7 @@ class ImageRequest(BaseModel):
 # ================== Task tracking ==================
 task_status: Dict[str, Dict] = {}  # task_id -> {"progress": float, "image_url": str}
 MAX_STEP = 32
-TOTAL_SECONDS = 180  # 3 phút
+TOTAL_SECONDS = 60  # 1 phút
 
 # ================== Fake image processing ==================
 def fake_generate(task_id: str, image_url: str):
