@@ -1,4 +1,6 @@
-from pyngrok import ngrok
+# from pyngrok import ngrok, conf, PyngrokConfig, NgrokTunnel
+# from pyngrok.conf import PyngrokConfig
 
-ngrok.set_auth_token("YOUR_NGROK_AUTHTOKEN")
-public_url = ngrok.connect(8000)
+# pyngrok_config = PyngrokConfig(pooling_enabled=True)
+# public_url = ngrok.connect(8000, pyngrok_config=pyngrok_config)
+# print("Public URL:", public_url)

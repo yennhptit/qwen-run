@@ -155,7 +155,7 @@ async def check_progress(task_id: str):
     if task_id not in task_status:
         return JSONResponse(status_code=404, content={"error": "task_id not found"})
     
-    status = task_status[task_id]
+    status = int(task_status[task_id])
     response = {"task_id": task_id, "progress": status["progress"]}
     
     if status["progress"] == 100.0 and status["image_url"]:
@@ -165,4 +165,4 @@ async def check_progress(task_id: str):
 
 # ================== Run server ==================
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("runqwen:app", host="0.0.0.0", port=8000, reload=True)
