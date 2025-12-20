@@ -17,6 +17,7 @@ from diffusers import BitsAndBytesConfig as DiffusersBitsAndBytesConfig
 from diffusers import QwenImageEditPipeline, QwenImageTransformer2DModel
 import os
 from dotenv import load_dotenv
+import uvicorn
 
 # Load Cloudinary
 load_dotenv()
@@ -124,4 +125,5 @@ async def check_progress(task_id: str):
     if status["progress"] == 100.0 and status["image_url"]:
         response["image_url"] = status["image_url"]
     return response
-if __name__ == "__main__": uvicorn.run("runqwen:app", host="0.0.0.0", port=7860, reload=False)
+if __name__ == "__main__": 
+    uvicorn.run("runqwen:app", host="0.0.0.0", port=7860, reload=False)
