@@ -1,24 +1,23 @@
 import io
-import os
 import uuid
 from datetime import datetime
-import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
+from PIL import Image
 from urllib.parse import urlparse
+import torch
 from transformers import BitsAndBytesConfig as TransformersBitsAndBytesConfig
 from transformers import Qwen2_5_VLForConditionalGeneration
 from diffusers import BitsAndBytesConfig as DiffusersBitsAndBytesConfig
 from diffusers import QwenImageEditPipeline, QwenImageTransformer2DModel
-from diffusers.utils import load_image
-from PIL import Image
 import cloudinary
 import cloudinary.uploader
 from dotenv import load_dotenv
 import uvicorn
+import time
+import os
 
 # ================== Load Cloudinary config ==================
 load_dotenv()
@@ -33,30 +32,24 @@ cloudinary.config(
 )
 
 # ================== FastAPI setup ==================
-app = FastAPI(title="Qwen Image Edit CPU Only")
+app = FastAPI(title="Qwen Image Edit Background")
 from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-class ImageRequest(BaseModel):
-    image_url: str
-    prompt: str
 
 # ================== ThreadPool & task tracking ==================
 MAX_WORKERS = 2
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 task_status: Dict[str, Dict] = {}  # task_id -> {"progress": float, "image_url": str}
 
-# CPU device
-device = "cpu"
-
-# ================== Model setup ==================
+# ================== Device & Model setup ==================
+device = "cuda" if torch.cuda.is_available() else "cpu"
 model_id = "Qwen/Qwen-Image-Edit"
 torch_dtype = torch.bfloat16
 
@@ -99,33 +92,22 @@ pipe.enable_model_cpu_offload()
 
 generator = torch.Generator(device=device).manual_seed(42)
 
-# ================== Image generation & upload ==================
-def generate_and_upload(task_id: str, image_url: str, prompt: str) -> str:
-    """
-    Generate image and upload to Cloudinary.
-    Updates task_status[task_id]["progress"] for fake progress.
-    """
+# ================== Background task ==================
+def generate_and_upload(task_id: str, image: Image.Image, prompt: str):
     try:
-        # Fake callback function
-        def callback(percent: float):
-            task_status[task_id]["progress"] = percent
+        # Fake progress mượt theo 32 steps
+        num_steps = 32
+        for step in range(num_steps):
+            task_status[task_id]["progress"] = (step / num_steps) * 80
+            time.sleep(0.1)  # giả lập
 
-        # Start progress
-        callback(10.0)
-
-        # Load input image
-        image = load_image(image_url)
-
-        # Run pipeline (no callback argument in new version)
+        # Chạy pipeline thật
         edited_image = pipe(
             image=image,
             prompt=prompt,
-            num_inference_steps=32,
+            num_inference_steps=num_steps,
             generator=generator
         ).images[0]
-
-        # Progress done
-        callback(80.0)
 
         # Save to buffer
         buf = io.BytesIO()
@@ -133,51 +115,44 @@ def generate_and_upload(task_id: str, image_url: str, prompt: str) -> str:
         buf.seek(0)
 
         # Generate public_id
-        parsed_url = urlparse(image_url)
-        original_name = os.path.basename(parsed_url.path)
-        name_wo_ext = os.path.splitext(original_name)[0]
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         random_suffix = uuid.uuid4().hex[:6]
-        public_id = f"{name_wo_ext}_edit_{timestamp}_{random_suffix}"
+        public_id = f"edit_{timestamp}_{random_suffix}"
 
-        # Upload to Cloudinary
+        # Upload Cloudinary
         upload_result = cloudinary.uploader.upload(buf, public_id=public_id, resource_type="image")
 
-        # Progress complete
-        callback(100.0)
+        # Update progress complete
+        task_status[task_id]["progress"] = 100.0
         task_status[task_id]["image_url"] = upload_result["secure_url"]
-
-        return upload_result["secure_url"]
 
     except Exception as e:
         task_status[task_id]["progress"] = -1.0
         task_status[task_id]["image_url"] = None
-        raise RuntimeError(f"Failed to generate/upload image: {e}")
+        print(f"Task {task_id} failed: {e}")
 
 # ================== API endpoints ==================
-@app.post("/edit-image")
-async def edit_image(request: ImageRequest):
+@app.post("/edit-image-file")
+async def edit_image_file(file: UploadFile = File(...), prompt: str = "Add a cat"):
     task_id = str(uuid.uuid4())
     task_status[task_id] = {"progress": 0.0, "image_url": None}
 
-    future = executor.submit(generate_and_upload, task_id, request.image_url, request.prompt)
-    try:
-        cloud_url = future.result()
-        return {"task_id": task_id, "image_url": cloud_url}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    contents = await file.read()
+    image = Image.open(io.BytesIO(contents)).convert("RGB")
+
+    executor.submit(generate_and_upload, task_id, image, prompt)
+
+    # Trả về ngay task_id
+    return {"task_id": task_id}
 
 @app.get("/progress/{task_id}")
 async def check_progress(task_id: str):
     if task_id not in task_status:
         return JSONResponse(status_code=404, content={"error": "task_id not found"})
-    
     status = task_status[task_id]
     response = {"task_id": task_id, "progress": status["progress"]}
-    
     if status["progress"] == 100.0 and status["image_url"]:
         response["image_url"] = status["image_url"]
-    
     return response
 
 # ================== Run server ==================
