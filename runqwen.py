@@ -34,7 +34,15 @@ cloudinary.config(
 
 # ================== FastAPI setup ==================
 app = FastAPI(title="Qwen Image Edit CPU Only")
+from fastapi.middleware.cors import CORSMiddleware
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Cho phép tất cả domain, test nhanh
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 class ImageRequest(BaseModel):
     image_url: str
     prompt: str
@@ -86,9 +94,9 @@ pipe = QwenImageEditPipeline.from_pretrained(
     torch_dtype=torch_dtype
 )
 pipe.load_lora_weights(
-    "flymy-ai/qwen-image-edit-inscene-lora",
-    weight_name="flymy_qwen_image_edit_inscene_lora.safetensors"
+    "flymy_qwen_image_edit_inscene_lora.safetensors"
 )
+
 pipe.enable_model_cpu_offload()
 
 generator = torch.Generator(device=device).manual_seed(42)
