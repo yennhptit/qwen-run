@@ -38,11 +38,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Cho phép tất cả domain, test nhanh
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 class ImageRequest(BaseModel):
     image_url: str
     prompt: str
@@ -93,37 +94,45 @@ pipe = QwenImageEditPipeline.from_pretrained(
     text_encoder=text_encoder,
     torch_dtype=torch_dtype
 )
-pipe.load_lora_weights(
-    "flymy_qwen_image_edit_inscene_lora.safetensors"
-)
-
+pipe.load_lora_weights("flymy_qwen_image_edit_inscene_lora.safetensors")
 pipe.enable_model_cpu_offload()
 
 generator = torch.Generator(device=device).manual_seed(42)
 
 # ================== Image generation & upload ==================
 def generate_and_upload(task_id: str, image_url: str, prompt: str) -> str:
+    """
+    Generate image and upload to Cloudinary.
+    Updates task_status[task_id]["progress"] for fake progress.
+    """
     try:
-        def callback(step, timestep, latents):
-            total_steps = 32
-            percent = (step + 1) / total_steps * 100
+        # Fake callback function
+        def callback(percent: float):
             task_status[task_id]["progress"] = percent
 
+        # Start progress
+        callback(10.0)
+
+        # Load input image
         image = load_image(image_url)
+
+        # Run pipeline (no callback argument in new version)
         edited_image = pipe(
             image=image,
             prompt=prompt,
             num_inference_steps=32,
-            generator=generator,
-            callback=callback,
-            callback_steps=1
+            generator=generator
         ).images[0]
 
+        # Progress done
+        callback(80.0)
+
+        # Save to buffer
         buf = io.BytesIO()
         edited_image.save(buf, format="PNG")
         buf.seek(0)
 
-        # Lấy tên file gốc từ URL và thêm _edit + timestamp + random suffix
+        # Generate public_id
         parsed_url = urlparse(image_url)
         original_name = os.path.basename(parsed_url.path)
         name_wo_ext = os.path.splitext(original_name)[0]
@@ -131,11 +140,11 @@ def generate_and_upload(task_id: str, image_url: str, prompt: str) -> str:
         random_suffix = uuid.uuid4().hex[:6]
         public_id = f"{name_wo_ext}_edit_{timestamp}_{random_suffix}"
 
-        # Upload lên Cloudinary
+        # Upload to Cloudinary
         upload_result = cloudinary.uploader.upload(buf, public_id=public_id, resource_type="image")
 
-        # Cập nhật status
-        task_status[task_id]["progress"] = 100.0
+        # Progress complete
+        callback(100.0)
         task_status[task_id]["image_url"] = upload_result["secure_url"]
 
         return upload_result["secure_url"]
@@ -163,7 +172,7 @@ async def check_progress(task_id: str):
     if task_id not in task_status:
         return JSONResponse(status_code=404, content={"error": "task_id not found"})
     
-    status = int(task_status[task_id])
+    status = task_status[task_id]
     response = {"task_id": task_id, "progress": status["progress"]}
     
     if status["progress"] == 100.0 and status["image_url"]:
