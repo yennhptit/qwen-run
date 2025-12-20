@@ -173,4 +173,4 @@ async def check_progress(task_id: str):
 
 # ================== Run server ==================
 if __name__ == "__main__":
-    uvicorn.run("runqwen:app", host="0.0.0.0", port=7860, reload=True)
+    uvicorn.run("runqwen:app", host="0.0.0.0", port=7860, reload=False)
