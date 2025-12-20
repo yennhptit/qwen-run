@@ -101,7 +101,7 @@ class ImageURLRequest(BaseModel):
     image_url: str
     prompt: str = "Add a cat"
 
-@app.post("/edit-image-url")
+@app.post("/edit-image")
 async def edit_image_url(request: ImageURLRequest):
     task_id = str(uuid.uuid4())
     task_status[task_id] = {"progress": 0.0, "image_url": None}
